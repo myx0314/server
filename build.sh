@@ -10,10 +10,11 @@ fi
 if [ $1 == server ]
 then
     echo "build server"
-    gcc server/*.c -I server/ -I base/ -o server/server
+    gcc server/*.c base/*.c -I server/ -I base/ -o server/server
 elif [ $1 == client ]
 then
     echo "build client"
+    gcc client/*.c base/*.c -I client/ -I base/ -o client/client
 else
     echo "wrong param!"
     exit

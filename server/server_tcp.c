@@ -10,34 +10,29 @@
 #define LOG_TAG  "[server_tcp]"
 
 sevent my_events[MAX_EVENT_SIZE + 1];
-static int32_t g_epfd;
+static int32_t g_epfd = 0;
+static int32_t g_lfd = 0;
 static void (*g_handle_buf)(char *buf, int32_t *buf_len) = NULL;
 
 static void read_data(int32_t fd, int32_t event, void *arg);
 
-int32_t server_tcp_init(int32_t *lfd) {
+int32_t server_tcp_init(void) {
     int32_t ret = 0;
     struct sockaddr_in addr = { 0 };
     int32_t opt = 1;
     FUNC_ENTER;
 
     do {
-        if (lfd == NULL) {
-            ret = -1;
-            LOGE(LOG_TAG "[%s] NULL Pointer!", __func__);
-            break;
-        }
-
-        // create socket
-        *lfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (*lfd < 0) {
+        // create the listening socket
+        g_lfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (g_lfd < 0) {
             LOGE(LOG_TAG "[%s] Creating the listening socket failed!", __func__);
             ret = -1;
             break;
         }
 
         // make the port able to be reused
-        ret = setsockopt(*lfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        ret = setsockopt(g_lfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
         if (ret < 0) {
             LOGE(LOG_TAG "[%s] setsockopt failed!", __func__);
             break;
@@ -45,16 +40,16 @@ int32_t server_tcp_init(int32_t *lfd) {
 
         // bind
         addr.sin_family = AF_INET;
-        addr.sin_port = htons(PORT_NUM);
+        addr.sin_port = htons(SERVER_PORT_NUM);
         inet_pton(AF_INET, SERVER_IP, &addr.sin_addr.s_addr);
-        ret = bind(*lfd, (struct sockaddr *) &addr, sizeof(addr));
+        ret = bind(g_lfd, (struct sockaddr *) &addr, sizeof(addr));
         if (ret < 0) {
             LOGE(LOG_TAG "[%s] bind failed!", __func__);
             break;
         }
 
         // listen
-        ret = listen(*lfd, MAX_SOCKET_QUEUE_LENGTH);
+        ret = listen(g_lfd, MAX_SOCKET_QUEUE_LENGTH);
         if (ret < 0) {
             LOGE(LOG_TAG "[%s] listen failed!", __func__);
             break;
@@ -110,6 +105,8 @@ static void del_event(sevent *ev, int32_t fd, int32_t events) {
     epv.data.ptr = NULL;
     epv.events = events;
     epoll_ctl(g_epfd, EPOLL_CTL_DEL, fd, &epv);
+
+    FUNC_EXIT_VOID;
 }
 
 static void send_data(int32_t fd, int32_t event, void* arg) {
@@ -126,13 +123,16 @@ static void read_data(int32_t fd, int32_t event, void *arg) {
     sevent *ev = arg;
     FUNC_ENTER;
 
+    memset(ev->buf, 0, ev->buflen);
     ev->buflen = read(fd, ev->buf, sizeof(ev->buf));
+    LOGI(LOG_TAG "[%s] accept message: %s", __func__, ev->buf);
     if (ev->buflen > 0) {
         if (g_handle_buf != NULL) {
             g_handle_buf(ev->buf, &ev->buflen);
         }
+        LOGI(LOG_TAG "[%s] send message: %s", __func__, ev->buf);
         set_event(fd, EPOLLOUT, send_data, arg, ev);    // to add customized func
-    } else if (ev->buflen == 0) {
+    } else if (ev->buflen <= 0) {
         close(fd);
         del_event(ev, fd, EPOLLIN);
     }
@@ -163,7 +163,7 @@ static void callback_accept(int32_t lfd, int32_t events, void *arg) {
     FUNC_EXIT_VOID;
 }
 
-int32_t server_tcp_epoll(int32_t lfd, void (*handle_buf)(char*, int32_t*)) {
+int32_t server_tcp_epoll(void (*handle_buf)(char*, int32_t*)) {
     int32_t ret = 0;
     FUNC_ENTER;
 
@@ -176,7 +176,12 @@ int32_t server_tcp_epoll(int32_t lfd, void (*handle_buf)(char*, int32_t*)) {
         }
 
         g_handle_buf = handle_buf;
-        add_event(lfd, EPOLLIN, callback_accept, &my_events[MAX_EVENT_SIZE], &my_events[MAX_EVENT_SIZE]);
+        if (g_lfd <= 0) {
+            ret = -1;
+            LOGE(LOG_TAG "[%s] Listening socket has not been created!", __func__);
+            break;
+        }
+        add_event(g_lfd, EPOLLIN, callback_accept, &my_events[MAX_EVENT_SIZE], &my_events[MAX_EVENT_SIZE]);
 
         while (1) {
             struct epoll_event events[MAX_EVENT_SIZE];
@@ -187,7 +192,7 @@ int32_t server_tcp_epoll(int32_t lfd, void (*handle_buf)(char*, int32_t*)) {
                 uint32_t i = 0;
                 for (i = 0; i < nready; i++) {
                     sevent *se = events[i].data.ptr;
-                    LOGI(LOG_TAG "[%s] fd = %d", __func__, se->fd);
+                    LOGD(LOG_TAG "[%s] fd = %d", __func__, se->fd);
 
                     if (se->events & events[i].events) {
                         se->call_back(se->fd, se->events, se);
